@@ -1,5 +1,5 @@
 from typing import Optional
-from snowflake.snowpark import Session
+from snowflake import connector
 
 DEFAULT_CONNECTION_PARAMETERS = {
     "account": "ZA08283.ap-south-1.aws",
@@ -9,13 +9,13 @@ DEFAULT_CONNECTION_PARAMETERS = {
 }
 
 
-def get_session(
+def get_connection(
     account: Optional[str] = None,
     user: Optional[str] = None,
     password: Optional[str] = None,
     database: Optional[str] = None,
     schema: Optional[str] = None,
-) -> Session:
+) -> connector.SnowflakeConnection:
     connection_parameters = DEFAULT_CONNECTION_PARAMETERS.copy()
 
     if account:
@@ -33,4 +33,11 @@ def get_session(
     if schema:
         connection_parameters["schema"] = schema
 
-    return Session.builder.configs(connection_parameters).create()  # type: ignore
+    return connector.connect(
+        user=connection_parameters.get("user"),
+        password=connection_parameters.get("password"),
+        account=connection_parameters.get("account"),
+        warehouse=connection_parameters.get("warehouse"),
+        database=connection_parameters.get("database"),
+        schema=connection_parameters.get("schema"),
+    )
