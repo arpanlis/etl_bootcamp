@@ -1,10 +1,3 @@
--- Temporary COUNTRY
-create table if not exists TMP.TMP_D_COUNTRY_LU (
-    ID NUMBER(38,0) NOT NULL,
-    COUNTRY_DESC VARCHAR(256),
-    PRIMARY KEY (ID)
-);
-
 -- Temporary REGION
 create table if not exists TMP.TMP_D_REGION_LU (
     ID NUMBER(38,0) NOT NULL,

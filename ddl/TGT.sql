@@ -1,10 +1,3 @@
--- Target COUNTRY
-create table if not exists TGT.DWH_D_COUNTRY_LU (
-    ID_SK INT AUTOINCREMENT,
-    SOURCE_ID NUMBER(38,0) NOT NULL,
-    COUNTRY_DESC VARCHAR(256),
-    PRIMARY KEY (ID_SK)
-);
 
 -- Target REGION
 create table if not exists TGT.DWH_D_REGION_LU (
