@@ -1,5 +1,5 @@
 from base_etl import BaseETL
-from con import get_connection
+from connection import get_connection
 
 
 class SalesETL(BaseETL):
@@ -59,12 +59,31 @@ class SalesETL(BaseETL):
     );
     """
 
-    def load(self):
+    tgt_sales_agg_ddl = """
+        CREATE TABLE TGT.DWH_F_BHATBHATENI_AGG_SLS_PLC_MONTH_T (
+            ID_SK INT AUTOINCREMENT,
+            MONTH VARCHAR,
+            STORE VARCHAR,
+            AMOUNT NUMBER,
+            DISCOUNT NUMBER,
+            PRIMARY KEY (ID_SK)
+        );
+    """
+
+    def __init__(self) -> None:
         conn = get_connection(schema="TGT")
         cur = conn.cursor()
 
-        # Truncate target table
-        cur.execute(f"TRUNCATE TABLE {self.TARGET_TABLE}")
+        # Create sales aggregation table
+        cur.execute(self.tgt_sales_agg_ddl)
+
+        cur.close()
+
+        super().__init__()
+
+    def load(self):
+        conn = get_connection(schema="TGT")
+        cur = conn.cursor()
 
         # Insert new records
         cur.execute(
@@ -79,7 +98,6 @@ class SalesETL(BaseETL):
             """
         )
 
-        # Update existing records (for minor changes)
         cur.execute(
             f"""
             MERGE INTO {self.TARGET_TABLE} TGT
@@ -112,5 +130,22 @@ class SalesETL(BaseETL):
             """
         )
 
+        # Clear aggregation table
+        cur.execute("TRUNCATE TABLE TGT.DWH_F_BHATBHATENI_AGG_SLS_PLC_MONTH_T")
+
+        # Generate sales aggregation
+        cur.execute(
+            f"""
+            INSERT INTO TGT.DWH_F_BHATBHATENI_AGG_SLS_PLC_MONTH_T (MONTH, STORE, AMOUNT, DISCOUNT)
+            SELECT 
+                TO_CHAR(TRANSACTION_TIME, 'YYYY-MM') AS MONTH,
+                STR.STORE_DESC AS STORE,
+                SUM(AMOUNT) AS AMOUNT,
+                SUM(DISCOUNT) AS DISCOUNT
+            FROM {self.TARGET_TABLE} SRC
+            JOIN TGT.DWH_D_STORE_LU STR ON SRC.STORE_ID_SK = STR.ID_SK
+            GROUP BY TO_CHAR(TRANSACTION_TIME, 'YYYY-MM'), STR.STORE_DESC
+            """
+        )
         print(f"Data has been loaded into {self.TARGET_TABLE}")
         cur.close()

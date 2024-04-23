@@ -1,6 +1,6 @@
 import os
 
-from con import get_connection
+from connection import get_connection
 from constants import DIMENSION_TABLES, EXPORT_FOLDER, SCHEMAS
 
 

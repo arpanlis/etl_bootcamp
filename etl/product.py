@@ -1,5 +1,5 @@
 from base_etl import BaseETL
-from con import get_connection
+from connection import get_connection
 
 
 class ProductETL(BaseETL):
