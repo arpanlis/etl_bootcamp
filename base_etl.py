@@ -28,15 +28,27 @@ class BaseETL:
 
         # Create tables in all schemas
         for schema in SCHEMAS:
-            conn = get_connection(schema=schema)
+            if schema == "STG":
+                table = self.STAGING_TABLE
+                ddl = self.staging_ddl
+            elif schema == "TMP":
+                table = self.TEMP_TABLE
+                ddl = self.temp_ddl
+            else:
+                table = self.TARGET_TABLE
+                ddl = self.target_ddl
 
-            cur = conn.cursor()
+            self.run_ddl(table=table, ddl=ddl, schema=schema)
 
-            cur.execute(self.staging_ddl)
-            cur.execute(self.temp_ddl)
-            cur.execute(self.target_ddl)
+    def run_ddl(self, table: str, ddl: str, schema: str):
+        conn = get_connection(schema=schema)
+        cur = conn.cursor()
 
-            cur.close()
+        ddl = f"CREATE TABLE IF NOT EXISTS {schema}.{table}({ddl});"
+
+        cur.execute(ddl)
+
+        cur.close()
 
     @property
     def STAGING_TABLE(self):

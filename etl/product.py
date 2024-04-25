@@ -7,93 +7,130 @@ class ProductETL(BaseETL):
     source_schema = "TRANSACTIONS"
 
     staging_ddl = """
-    create table if not exists STG.STG_D_PRODUCT_LU (
         ID NUMBER(38,0) NOT NULL,
         SUBCATEGORY_ID NUMBER(38,0),
         PRODUCT_DESC VARCHAR(256),
         primary key (ID),
         foreign key (SUBCATEGORY_ID) references BHATBHATENI.TRANSACTIONS.SUBCATEGORY(ID)
-    );
     """
 
     temp_ddl = """
-    create table if not exists TMP.TMP_D_PRODUCT_LU (
         ID NUMBER(38,0) NOT NULL,
         SUBCATEGORY_ID NUMBER(38,0),
         PRODUCT_DESC VARCHAR(256),
         PRIMARY KEY (ID),
         FOREIGN KEY (SUBCATEGORY_ID) REFERENCES TMP.TMP_D_SUBCATEGORY_LU(ID)
-    );
     """
 
     target_ddl = """
-    create table if not exists TGT.DWH_D_PRODUCT_LU (
         ID_SK INT AUTOINCREMENT,
         SOURCE_ID NUMBER(38,0) NOT NULL,
         SUBCATEGORY_ID_SK NUMBER(38,0),
         PRODUCT_DESC VARCHAR(256),
-        VALID_FROM TIMESTAMP,
-        VALID_TILL TIMESTAMP,
+        START_DATE TIMESTAMP,
+        CLOSE_DATE TIMESTAMP,
         ACTIVE_FLAG BOOLEAN,
         primary key (ID_SK),
         FOREIGN KEY (SUBCATEGORY_ID_SK) REFERENCES TGT.DWH_D_SUBCATEGORY_LU(ID_SK)
-    );
     """
 
     def load(self):
         conn = get_connection(schema="TGT")
         cur = conn.cursor()
 
-        # Insert new records
+        # Close dimensions
         cur.execute(
             f"""
-            INSERT INTO {self.TARGET_TABLE} (SOURCE_ID, SUBCATEGORY_ID_SK, PRODUCT_DESC, VALID_FROM, VALID_TILL, ACTIVE_FLAG)
-            SELECT SRC.ID, SUB.ID_SK, SRC.PRODUCT_DESC, CURRENT_TIMESTAMP(), NULL, TRUE
-            FROM TMP.{self.TEMP_TABLE} SRC
-            LEFT JOIN TGT.DWH_D_SUBCATEGORY_LU SUB ON SRC.SUBCATEGORY_ID = SUB.SOURCE_ID
-            WHERE SRC.ID NOT IN (SELECT SOURCE_ID FROM {self.TARGET_TABLE})
-            """
-        )
-
-        # Update existing records (for minor changes)
-        cur.execute(
-            f"""
-            MERGE INTO {self.TARGET_TABLE} TGT
-            USING (
-                SELECT SRC.ID, SRC.PRODUCT_DESC, SRC.SUBCATEGORY_ID, SUB.ID_SK AS SUBCATEGORY_ID_SK
-                FROM TMP.{self.TEMP_TABLE} SRC
-                LEFT JOIN TGT.DWH_D_SUBCATEGORY_LU SUB ON SRC.SUBCATEGORY_ID = SUB.SOURCE_ID
-            ) SRC
-            ON TGT.SOURCE_ID = SRC.ID
-            WHEN MATCHED AND (
-                TGT.PRODUCT_DESC <> SRC.PRODUCT_DESC
-                OR TGT.SUBCATEGORY_ID_SK <> SRC.SUBCATEGORY_ID_SK
-            ) THEN
-            UPDATE
-            SET TGT.PRODUCT_DESC = SRC.PRODUCT_DESC,
-                TGT.SUBCATEGORY_ID_SK = SRC.SUBCATEGORY_ID_SK,
-                TGT.VALID_TILL = CURRENT_TIMESTAMP(),
-                TGT.ACTIVE_FLAG = FALSE
-            """
-        )
-
-        # Insert updated records as new rows
-        cur.execute(
-            f"""
-            INSERT INTO {self.TARGET_TABLE} (SOURCE_ID, SUBCATEGORY_ID_SK, PRODUCT_DESC, VALID_FROM, VALID_TILL, ACTIVE_FLAG)
-            SELECT SRC.ID, SRC.SUBCATEGORY_ID_SK, SRC.PRODUCT_DESC, CURRENT_TIMESTAMP(), NULL, TRUE
-            FROM (
-                SELECT SRC.ID, SRC.PRODUCT_DESC, SRC.SUBCATEGORY_ID, SUB.ID_SK AS SUBCATEGORY_ID_SK
-                FROM TMP.{self.TEMP_TABLE} SRC
-                LEFT JOIN TGT.DWH_D_SUBCATEGORY_LU SUB ON SRC.SUBCATEGORY_ID = SUB.SOURCE_ID
-            ) SRC
-            WHERE SRC.ID IN (
-                SELECT SOURCE_ID
+            UPDATE {self.TARGET_TABLE}
+            SET CLOSE_DATE = CURRENT_TIMESTAMP(),
+                ACTIVE_FLAG = FALSE
+            WHERE ID_SK IN (
+                SELECT ID_SK
                 FROM {self.TARGET_TABLE}
-                WHERE VALID_TILL = CURRENT_TIMESTAMP()
+                WHERE ACTIVE_FLAG = TRUE
+                  AND SOURCE_ID NOT IN (SELECT ID FROM TMP.{self.TEMP_TABLE})
             )
             """
         )
 
+        # Type 1 SCD
+        cur.execute(
+            """
+            MERGE INTO TGT.DWH_D_PRODUCT_LU TGT
+            USING (
+                SELECT
+                    SRC.ID,
+                    SRC.SUBCATEGORY_ID,
+                    SRC.PRODUCT_DESC,
+                    SUBCATEGORY.ID_SK AS SUBCATEGORY_ID_SK
+                FROM TMP.TMP_D_PRODUCT_LU SRC
+                LEFT JOIN TGT.DWH_D_SUBCATEGORY_LU SUBCATEGORY ON SUBCATEGORY.SOURCE_ID = SRC.SUBCATEGORY_ID AND SUBCATEGORY.ACTIVE_FLAG = TRUE
+            ) SRC
+            ON TGT.SOURCE_ID = SRC.ID AND TGT.ACTIVE_FLAG = TRUE
+            WHEN MATCHED AND (TGT.PRODUCT_DESC <> SRC.PRODUCT_DESC)
+            THEN
+                UPDATE
+                SET TGT.PRODUCT_DESC = SRC.PRODUCT_DESC,
+                    TGT.SUBCATEGORY_ID_SK = SRC.SUBCATEGORY_ID_SK,
+                    TGT.START_DATE = CURRENT_TIMESTAMP(),
+                    TGT.ACTIVE_FLAG = TRUE
+            WHEN NOT MATCHED THEN
+                INSERT (SOURCE_ID, SUBCATEGORY_ID_SK, PRODUCT_DESC, START_DATE, CLOSE_DATE, ACTIVE_FLAG)
+                VALUES (SRC.ID, SRC.SUBCATEGORY_ID_SK, SRC.PRODUCT_DESC, CURRENT_TIMESTAMP(), NULL, TRUE);
+        """
+        )
+
+        # Disable autocommit to allow for rollback
+        conn.autocommit(False)
+        cur = conn.cursor()
+
+        # Type 2 SCD
+        try:
+            # Mark previous records as closed
+            cur.execute(
+                """
+                    MERGE INTO TGT.DWH_D_PRODUCT_LU TGT
+                    USING (
+                        SELECT
+                            SRC.ID,
+                            SRC.SUBCATEGORY_ID,
+                            SRC.PRODUCT_DESC,
+                            SUBCATEGORY.ID_SK AS SUBCATEGORY_ID_SK
+                        FROM TMP.TMP_D_PRODUCT_LU SRC
+                        LEFT JOIN TGT.DWH_D_SUBCATEGORY_LU SUBCATEGORY ON SUBCATEGORY.SOURCE_ID = SRC.SUBCATEGORY_ID AND SUBCATEGORY.ACTIVE_FLAG = TRUE
+                    ) SRC
+                    ON TGT.SOURCE_ID = SRC.ID AND TGT.ACTIVE_FLAG = TRUE
+                    WHEN MATCHED AND TGT.SUBCATEGORY_ID_SK <> SRC.SUBCATEGORY_ID_SK
+                    THEN
+                        UPDATE
+                        SET TGT.CLOSE_DATE = CURRENT_TIMESTAMP(),
+                            TGT.ACTIVE_FLAG = FALSE
+                """
+            )
+
+            cur.execute(
+                """
+                INSERT INTO TGT.DWH_D_PRODUCT_LU (SOURCE_ID, SUBCATEGORY_ID_SK, PRODUCT_DESC, START_DATE, CLOSE_DATE, ACTIVE_FLAG)
+                SELECT
+                    SRC.ID,
+                    SUBCAT.ID_SK,
+                    SRC.PRODUCT_DESC,
+                    CURRENT_TIMESTAMP(),
+                    NULL,
+                    TRUE
+                FROM TMP.TMP_D_PRODUCT_LU SRC
+                JOIN TGT.DWH_D_SUBCATEGORY_LU SUBCAT ON SUBCAT.SOURCE_ID = SRC.SUBCATEGORY_ID AND SUBCAT.ACTIVE_FLAG = TRUE
+                LEFT JOIN TGT.DWH_D_PRODUCT_LU TGT ON TGT.SOURCE_ID = SRC.ID AND TGT.ACTIVE_FLAG = TRUE
+                WHERE TGT.SOURCE_ID IS NULL;
+                """
+            )
+
+            conn.commit()
+            cur.close()
+
+        except Exception as e:
+            conn.rollback()
+            cur.close()
+            raise e
+
         print(f"Data has been loaded into {self.TARGET_TABLE}")
-        cur.close()

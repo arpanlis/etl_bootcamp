@@ -7,91 +7,120 @@ class CustomerETL(BaseETL):
     source_schema = "TRANSACTIONS"
 
     staging_ddl = """
-    create table if not exists STG.STG_D_CUSTOMER_LU (
         ID NUMBER(38,0) NOT NULL,
         CUSTOMER_FIRST_NAME VARCHAR(256),
         CUSTOMER_MIDDLE_NAME VARCHAR(256),
         CUSTOMER_LAST_NAME VARCHAR(256),
         CUSTOMER_ADDRESS VARCHAR(256),
         primary key (ID)
-    );
     """
 
     temp_ddl = """
-    create table if not exists TMP.TMP_D_CUSTOMER_LU (
         ID NUMBER(38,0) NOT NULL,
         CUSTOMER_FIRST_NAME VARCHAR(256),
         CUSTOMER_MIDDLE_NAME VARCHAR(256),
         CUSTOMER_LAST_NAME VARCHAR(256),
         CUSTOMER_ADDRESS VARCHAR(256),
         PRIMARY KEY (ID)
-    );
     """
 
     target_ddl = """
-    create table if not exists TGT.DWH_D_CUSTOMER_LU (
         ID_SK INT AUTOINCREMENT,
         SOURCE_ID NUMBER(38,0) NOT NULL,
         CUSTOMER_FIRST_NAME VARCHAR(256),
         CUSTOMER_MIDDLE_NAME VARCHAR(256),
         CUSTOMER_LAST_NAME VARCHAR(256),
         CUSTOMER_ADDRESS VARCHAR(256),
-        VALID_FROM TIMESTAMP,
-        VALID_TILL TIMESTAMP,
+        START_DATE TIMESTAMP,
+        CLOSE_DATE TIMESTAMP,
         ACTIVE_FLAG BOOLEAN,
         primary key (ID_SK)
-    );
     """
 
     def load(self):
         conn = get_connection(schema="TGT")
         cur = conn.cursor()
 
-        # Insert new records
+        # Close dimensions
         cur.execute(
             f"""
-            INSERT INTO {self.TARGET_TABLE} (SOURCE_ID, CUSTOMER_FIRST_NAME, CUSTOMER_MIDDLE_NAME, CUSTOMER_LAST_NAME, CUSTOMER_ADDRESS, VALID_FROM, VALID_TILL, ACTIVE_FLAG)
-            SELECT ID, CUSTOMER_FIRST_NAME, CUSTOMER_MIDDLE_NAME, CUSTOMER_LAST_NAME, CUSTOMER_ADDRESS, CURRENT_TIMESTAMP(), NULL, TRUE
-            FROM TMP.{self.TEMP_TABLE}
-            WHERE ID NOT IN (SELECT SOURCE_ID FROM {self.TARGET_TABLE})
-            """
-        )
-
-        # Update existing records (for minor changes)
-        cur.execute(
-            f"""
-            MERGE INTO {self.TARGET_TABLE} TGT
-            USING TMP.{self.TEMP_TABLE} SRC
-            ON TGT.SOURCE_ID = SRC.ID
-            WHEN MATCHED AND (
-                TGT.CUSTOMER_FIRST_NAME <> SRC.CUSTOMER_FIRST_NAME
-                OR TGT.CUSTOMER_MIDDLE_NAME <> SRC.CUSTOMER_MIDDLE_NAME
-                OR TGT.CUSTOMER_LAST_NAME <> SRC.CUSTOMER_LAST_NAME
-                OR TGT.CUSTOMER_ADDRESS <> SRC.CUSTOMER_ADDRESS
-            ) THEN
-            UPDATE
-            SET TGT.CUSTOMER_FIRST_NAME = SRC.CUSTOMER_FIRST_NAME,
-                TGT.CUSTOMER_MIDDLE_NAME = SRC.CUSTOMER_MIDDLE_NAME,
-                TGT.CUSTOMER_LAST_NAME = SRC.CUSTOMER_LAST_NAME,
-                TGT.CUSTOMER_ADDRESS = SRC.CUSTOMER_ADDRESS,
-                TGT.VALID_TILL = CURRENT_TIMESTAMP(),
-                TGT.ACTIVE_FLAG = FALSE
-            """
-        )
-
-        # Insert updated records as new rows
-        cur.execute(
-            f"""
-            INSERT INTO {self.TARGET_TABLE} (SOURCE_ID, CUSTOMER_FIRST_NAME, CUSTOMER_MIDDLE_NAME, CUSTOMER_LAST_NAME, CUSTOMER_ADDRESS, VALID_FROM, VALID_TILL, ACTIVE_FLAG)
-            SELECT ID, CUSTOMER_FIRST_NAME, CUSTOMER_MIDDLE_NAME, CUSTOMER_LAST_NAME, CUSTOMER_ADDRESS, CURRENT_TIMESTAMP(), NULL, TRUE
-            FROM TMP.{self.TEMP_TABLE}
-            WHERE ID IN (
-                SELECT SOURCE_ID
+            UPDATE {self.TARGET_TABLE}
+            SET CLOSE_DATE = CURRENT_TIMESTAMP(),
+                ACTIVE_FLAG = FALSE
+            WHERE ID_SK IN (
+                SELECT ID_SK
                 FROM {self.TARGET_TABLE}
-                WHERE VALID_TILL = CURRENT_TIMESTAMP()
+                WHERE ACTIVE_FLAG = TRUE
+                  AND SOURCE_ID NOT IN (SELECT ID FROM TMP.{self.TEMP_TABLE})
             )
             """
         )
 
+        # Type 1 SCD
+        cur.execute(
+            """
+            MERGE INTO TGT.DWH_D_CUSTOMER_LU TGT
+            USING (
+                SELECT
+                    SRC.ID,
+                    SRC.CUSTOMER_FIRST_NAME,
+                    SRC.CUSTOMER_MIDDLE_NAME,
+                    SRC.CUSTOMER_LAST_NAME,
+                    SRC.CUSTOMER_ADDRESS
+                FROM TMP.TMP_D_CUSTOMER_LU SRC
+            ) SRC
+            ON TGT.SOURCE_ID = SRC.ID AND TGT.ACTIVE_FLAG = TRUE
+            WHEN MATCHED AND (
+                TGT.CUSTOMER_FIRST_NAME <> SRC.CUSTOMER_FIRST_NAME OR
+                TGT.CUSTOMER_MIDDLE_NAME <> SRC.CUSTOMER_MIDDLE_NAME OR
+                TGT.CUSTOMER_LAST_NAME <> SRC.CUSTOMER_LAST_NAME OR
+                TGT.CUSTOMER_ADDRESS <> SRC.CUSTOMER_ADDRESS
+            )
+            THEN
+                UPDATE
+                SET TGT.CUSTOMER_FIRST_NAME = SRC.CUSTOMER_FIRST_NAME,
+                    TGT.CUSTOMER_MIDDLE_NAME = SRC.CUSTOMER_MIDDLE_NAME,
+                    TGT.CUSTOMER_LAST_NAME = SRC.CUSTOMER_LAST_NAME,
+                    TGT.CUSTOMER_ADDRESS = SRC.CUSTOMER_ADDRESS,
+                    TGT.START_DATE = CURRENT_TIMESTAMP(),
+                    TGT.ACTIVE_FLAG = TRUE
+            WHEN NOT MATCHED THEN
+                INSERT (
+                    SOURCE_ID,
+                    CUSTOMER_FIRST_NAME,
+                    CUSTOMER_MIDDLE_NAME,
+                    CUSTOMER_LAST_NAME,
+                    CUSTOMER_ADDRESS,
+                    START_DATE,
+                    CLOSE_DATE,
+                    ACTIVE_FLAG
+                )
+                VALUES (
+                    SRC.ID,
+                    SRC.CUSTOMER_FIRST_NAME,
+                    SRC.CUSTOMER_MIDDLE_NAME,
+                    SRC.CUSTOMER_LAST_NAME,
+                    SRC.CUSTOMER_ADDRESS,
+                    CURRENT_TIMESTAMP(),
+                    NULL,
+                    TRUE
+                );
+        """
+        )
+
+        # Disable autocommit to allow for rollback
+        conn.autocommit(False)
+        cur = conn.cursor()
+
+        # Type 2 SCD (None specified in the original script)
+
+        try:
+            conn.commit()
+            cur.close()
+
+        except Exception as e:
+            conn.rollback()
+            cur.close()
+            raise e
+
         print(f"Data has been loaded into {self.TARGET_TABLE}")
-        cur.close()
