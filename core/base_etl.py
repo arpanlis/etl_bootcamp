@@ -1,7 +1,7 @@
 import os
 
-from connection import get_connection
-from constants import DIMENSION_TABLES, EXPORT_FOLDER, SCHEMAS
+from core.connection import get_connection
+from core.constants import DIMENSION_TABLES, EXPORT_FOLDER, SCHEMAS
 
 
 class BaseETL:

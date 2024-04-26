@@ -1,5 +1,5 @@
-from base_etl import BaseETL
-from connection import get_connection
+from core.base_etl import BaseETL
+from core.connection import get_connection
 
 
 class CountryETL(BaseETL):
