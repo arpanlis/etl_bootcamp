@@ -1,0 +1,10 @@
+ID,CATEGORY_ID,SUBCATEGORY_DESC
+1,1,MENS WEAR
+2,1,WOMENS WEAR
+3,1,KIDS WEAR
+4,2,Dairy
+5,2,Fruits
+6,2,Packed Items
+7,3,Utensils
+8,3,Glassware
+9,3,ElectricAppliances
